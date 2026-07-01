@@ -1,0 +1,76 @@
+# ============================================================================
+#  reddit-scraper — single control file. Edit this, run `python -m reddit_scraper`.
+#  Every value here can also be overridden on the command line (see README).
+#  Nothing else needs editing to scrape any subreddit. No auth / API key needed.
+# ============================================================================
+
+# --- WHAT TO SCRAPE ---------------------------------------------------------
+# List any subreddits you want (case doesn't matter for the API, but the casing
+# you write here is used for the output folder names). Add/remove freely.
+subreddits:
+  - python
+  - rust
+  - golang
+
+# --- DATE RANGE -------------------------------------------------------------
+# Window of post/comment CREATION time to pull. Accepts, for `since`/`until`:
+#   - a relative age:  "2y", "18m", "90d", "12h"   (y=years, m=months, d=days, h=hours)
+#   - an absolute date: "2024-01-31"  (UTC midnight)
+#   - an epoch second:  1704067200
+#   - "now"  (only meaningful for `until`)
+#   - "all"  (only meaningful for `since` — start from Reddit's beginning, 2005)
+since: "2y"      # how far back to go. e.g. "2y" = past two years.
+until: "now"     # up to when. "now" = the moment you run it.
+
+# --- WHICH DATA TO FETCH ----------------------------------------------------
+# Toggle each independently. Cheap stuff is on by default; expensive stuff off.
+fetch:
+  posts: true            # submissions (title, url, score, etc.)
+  comments: true         # every comment, flat (this is what most analysis needs)
+  reconstruct_threads: true   # rebuild nested reply trees OFFLINE from comments — free & fast
+  api_trees: false       # ALSO pull nested trees from the API per-post. Slow (~1.5s/post).
+                         #   Usually unnecessary because reconstruct_threads gives the same shape.
+  subreddit_meta: false  # one-shot: subscriber count, created date, etc. per sub.
+
+# --- LIVE REFRESH (optional, needs Playwright + a Chromium browser) ---------
+# Arctic Shift stores score/comment-count shortly after a post is made, so very
+# recent posts can have stale counts. This opens a real browser to read the
+# current numbers and stores them in the `live_*` columns. Leave off if you
+# don't care about up-to-the-minute scores.
+live_refresh:
+  enabled: false
+  window_days: 30        # only refresh posts created within this many days
+  min_delay: 2.0         # seconds between page loads (a random value up to max is used)
+  max_delay: 5.0
+  headless: true         # false = watch the browser work (debugging)
+  use_proxies: false     # rotate free public proxies if your IP gets throttled
+  limit: null            # cap number of posts refreshed (null = no cap; handy for testing)
+
+# --- PERFORMANCE ------------------------------------------------------------
+# Time-sharded parallelism: the date window is split into `workers` slices that
+# download concurrently. ~8x faster on big subs. Arctic Shift tolerates 10-20.
+# Set to 1 for gentle sequential scraping.
+workers: 10
+
+# --- OUTPUT -----------------------------------------------------------------
+output:
+  data_dir: "./data"     # JSONL dumps land in <data_dir>/<subreddit>/
+  db_path: "./scraper.db"  # SQLite source-of-truth (dedups everything, resumable)
+  formats:               # which on-disk formats to write. sqlite is always written.
+    jsonl: true          # one JSON object per line — full fidelity, easy to stream
+    csv: false           # flattened posts.csv / comments.csv — easy for Excel/pandas
+
+# --- NETWORK TUNING (sane defaults; rarely need changing) -------------------
+network:
+  http_cache: true       # remember responses on disk so re-runs skip re-downloading
+  page_limit: 100        # items per request (100 is the API max)
+  request_timeout: 45     # seconds per HTTP request
+  min_request_interval: 0.25  # seconds between requests per worker (~4 req/s)
+  ratelimit_floor: 20    # if the API says fewer than this many calls remain, pause
+  max_retries: 9         # transient "slow down" errors need patience
+  backoff_base: 2        # exponential backoff base (seconds)
+  backoff_cap: 60        # never sleep longer than this on a single retry
+  # Tree endpoint: max these out so big threads come back fully expanded.
+  tree_limit: 25000
+  tree_breadth: 100000
+  tree_depth: 100000

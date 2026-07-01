@@ -1,0 +1,6 @@
+PyYAML>=6.0
+requests>=2.31
+requests-cache>=1.2
+tqdm>=4.66
+# Optional — only needed for `--live` score refresh:
+playwright>=1.44

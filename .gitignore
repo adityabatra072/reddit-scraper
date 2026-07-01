@@ -1,0 +1,14 @@
+# scraped output & databases
+data/
+*.db
+*.db-wal
+*.db-shm
+http_cache.sqlite
+_test_data/
+_test.db*
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
