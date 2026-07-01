@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reddit-scraper"
+version = "1.0.0"
+description = "General-purpose, no-auth Reddit scraper built on the Arctic Shift archive."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "adityabatra072" }]
+keywords = ["reddit", "scraper", "arctic-shift", "archive", "data"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+]
+dependencies = [
+    "PyYAML>=6.0",
+    "requests>=2.31",
+    "requests-cache>=1.2",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+live = ["playwright>=1.44"]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+    "playwright>=1.44",
+]
+
+[project.urls]
+Homepage = "https://github.com/adityabatra072/reddit-scraper"
+Repository = "https://github.com/adityabatra072/reddit-scraper"
+Issues = "https://github.com/adityabatra072/reddit-scraper/issues"
+
+[project.scripts]
+reddit-scraper = "reddit_scraper.__main__:main"
+
+[tool.setuptools]
+packages = ["reddit_scraper"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E731"]  # allow small lambda assignments used for fetch dispatch
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

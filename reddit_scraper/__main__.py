@@ -31,6 +31,9 @@ import argparse
 from datetime import datetime, timezone
 
 from . import config as cfgmod
+from .logging_util import get_logger, setup_logging
+
+log = get_logger()
 
 
 def _bool_pair(ap, name, dest, help_on):
@@ -83,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="cap posts refreshed (testing)")
     ap.add_argument("--incremental", action="store_true",
                     help="resume finished subs to catch newly-created items")
+
+    # verbosity
+    ap.add_argument("-v", "--verbose", action="store_true",
+                    help="verbose (DEBUG) logging")
+    ap.add_argument("-q", "--quiet", action="store_true",
+                    help="quiet: warnings and errors only")
     return ap
 
 
@@ -92,8 +101,10 @@ def _fmt(epoch: int) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    setup_logging(1 if args.verbose else (-1 if args.quiet else 0))
+    _control = ("config", "stage", "incremental", "verbose", "quiet")
     overrides = {k: v for k, v in vars(args).items()
-                 if k not in ("config", "stage", "incremental") and v is not None}
+                 if k not in _control and v is not None}
     cfg = cfgmod.load(args.config, overrides)
 
     from .cache import Cache
@@ -101,9 +112,9 @@ def main(argv: list[str] | None = None) -> int:
     subs = cfg.subreddits
 
     if args.stage == "stats":
-        print("=== overall ===", cache.stats())
+        log.info("=== overall === %s", cache.stats())
         for s in subs:
-            print(f"r/{s}:", cache.stats(s))
+            log.info("r/%s: %s", s, cache.stats(s))
         cache.close()
         return 0
 
@@ -111,30 +122,35 @@ def main(argv: list[str] | None = None) -> int:
         from .writer import export_csv
         for s in subs:
             res = export_csv(cfg, cache, s)
-            print(f"[export] r/{s}: {res['posts']} posts.csv rows, {res['comments']} comments.csv rows")
+            log.info("[export] r/%s: %d posts.csv rows, %d comments.csv rows",
+                     s, res["posts"], res["comments"])
         cache.close()
         return 0
 
-    print(f"Subreddits: {', '.join('r/'+s for s in subs)}")
-    print(f"Window:     {_fmt(cfg.since)} -> {_fmt(cfg.until)}  "
-          f"({(cfg.until - cfg.since)//86400} days) | workers={cfg.workers}")
+    log.info("Subreddits: %s", ", ".join("r/" + s for s in subs))
+    log.info("Window:     %s -> %s  (%d days) | workers=%d",
+             _fmt(cfg.since), _fmt(cfg.until),
+             (cfg.until - cfg.since) // 86400, cfg.workers)
 
     # --- backfill ----------------------------------------------------------
     if args.stage in ("backfill", "all"):
         if cfg.workers > 1:
             from .parallel import backfill_subreddit_parallel
             for s in subs:
-                res = backfill_subreddit_parallel(cfg, cache, s, cfg.since, cfg.until, cfg.workers)
-                print(f"[backfill x{cfg.workers}] r/{s}: +{res.get('posts',0)} posts, "
-                      f"+{res.get('comments',0)} comments, {res.get('threads',0)} threads")
+                res = backfill_subreddit_parallel(cfg, cache, s, cfg.since, cfg.until,
+                                                  cfg.workers, args.incremental)
+                log.info("[backfill x%d] r/%s: +%d posts, +%d comments, %d threads",
+                         cfg.workers, s, res.get("posts", 0),
+                         res.get("comments", 0), res.get("threads", 0))
         else:
             from .arctic_client import ArcticClient
             client = ArcticClient(cfg)
             try:
                 for s in subs:
-                    res = backfill_subreddit(cfg, client, cache, s, args.incremental)
-                    print(f"[backfill] r/{s}: " +
-                          ", ".join(f"+{v} {k}" for k, v in res.items()))
+                    res = backfill_subreddit(cfg, client, cache, s, cfg.since, cfg.until,
+                                             args.incremental)
+                    log.info("[backfill] r/%s: %s", s,
+                             ", ".join(f"+{v} {k}" for k, v in res.items()))
             finally:
                 client.close()
 
@@ -145,29 +161,29 @@ def main(argv: list[str] | None = None) -> int:
     ):
         from .reconstruct import reconstruct_all
         totals = reconstruct_all(cfg, cache, subs)
-        print(f"[threads] total: {totals}")
+        log.info("[threads] total: %s", totals)
 
     # --- live refresh ------------------------------------------------------
     if args.stage == "refresh" or (args.stage == "all" and cfg.live_enabled):
         from .live_refresh import refresh_recent
         res = refresh_recent(cfg, cache, subs)
-        print(f"[refresh] {res}")
+        log.info("[refresh] %s", res)
 
     # --- optional CSV export ----------------------------------------------
     if cfg.write_csv and args.stage in ("backfill", "all"):
         from .writer import export_csv
         for s in subs:
             res = export_csv(cfg, cache, s)
-            print(f"[export] r/{s}: {res['posts']} posts.csv rows, {res['comments']} comments.csv rows")
+            log.info("[export] r/%s: %d posts.csv rows, %d comments.csv rows",
+                     s, res["posts"], res["comments"])
 
-    print("=== final stats ===", cache.stats())
+    log.info("=== final stats === %s", cache.stats())
     cache.close()
     return 0
 
 
 # imported lazily above to keep --stats fast
 from .backfill import backfill_subreddit  # noqa: E402
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -48,9 +48,16 @@ live_refresh:
 
 # --- PERFORMANCE ------------------------------------------------------------
 # Time-sharded parallelism: the date window is split into `workers` slices that
-# download concurrently. ~8x faster on big subs. Arctic Shift tolerates 10-20.
-# Set to 1 for gentle sequential scraping.
-workers: 10
+# download concurrently — much faster on big subs. Set to 1 for gentle
+# sequential scraping.
+#
+# Rough budget: each worker paces itself at ~1/min_request_interval req/s, so
+# total ≈ workers / min_request_interval req/s. With the defaults below
+# (8 workers, 0.25s) that's ~32 req/s ≈ 1920 req/min — just under Arctic
+# Shift's ~2000 req/min ceiling. If you raise `workers`, also raise
+# `network.min_request_interval` to stay under it (the client will still back
+# off reactively if the API signals it's being hit too hard).
+workers: 8
 
 # --- OUTPUT -----------------------------------------------------------------
 output:

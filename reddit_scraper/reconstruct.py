@@ -20,6 +20,9 @@ import json
 
 from .cache import Cache
 from .config import Config
+from .logging_util import get_logger
+
+log = get_logger()
 
 
 def _strip(fullname: str | None) -> str | None:
@@ -38,12 +41,7 @@ def reconstruct_subreddit(cfg: Config, cache: Cache, subreddit: str) -> dict:
     # contiguous; build + flush one post's tree at a time. This keeps only a
     # single post's comments in memory (huge subs have 1M+ comments — loading
     # them all at once OOMs a small box).
-    cur = cache.conn.execute(
-        """SELECT link_id, archive_json
-           FROM comments WHERE subreddit = ?
-           ORDER BY link_id ASC, created_utc ASC""",
-        (subreddit,),
-    )
+    rows = cache.iter_comments_for_threads(subreddit)
 
     out_path = cfg.sub_dir(subreddit) / "threads.jsonl"
     placed = 0
@@ -61,7 +59,7 @@ def reconstruct_subreddit(cfg: Config, cache: Cache, subreddit: str) -> dict:
         return 1, n
 
     with out_path.open("w", encoding="utf-8") as f:
-        for row in cur:
+        for row in rows:
             link_id = row["link_id"]
             if link_id != current_link and current_link is not None:
                 p, n = flush(f, current_link, group)
@@ -116,6 +114,6 @@ def reconstruct_all(cfg: Config, cache: Cache, subreddits: list[str]) -> dict:
         r = reconstruct_subreddit(cfg, cache, s)
         totals["posts_with_threads"] += r["posts_with_threads"]
         totals["comments_placed"] += r["comments_placed"]
-        print(f"[threads] r/{s}: {r['posts_with_threads']} threads, "
-              f"{r['comments_placed']} comments placed")
+        log.info("[threads] r/%s: %d threads, %d comments placed",
+                 s, r["posts_with_threads"], r["comments_placed"])
     return totals

@@ -89,12 +89,15 @@ class ArcticClient:
             # like {"error":"Timeout. Maybe slow down a bit"} — that is transient
             # and must be retried, not treated as fatal.
             if resp.status_code in (429, 422) or resp.status_code >= 500:
-                last_err = ArcticShiftError(f"HTTP {resp.status_code} on {endpoint}: {resp.text[:150]}")
+                last_err = ArcticShiftError(
+                    f"HTTP {resp.status_code} on {endpoint}: {resp.text[:150]}")
                 self._sleep_backoff(attempt)
                 continue
-            raise ArcticShiftError(f"HTTP {resp.status_code} on {endpoint}: {resp.text[:200]}")
+            raise ArcticShiftError(
+                f"HTTP {resp.status_code} on {endpoint}: {resp.text[:200]}")
 
-        raise ArcticShiftError(f"giving up on {endpoint} after {cfg.max_retries} retries: {last_err}")
+        raise ArcticShiftError(
+            f"giving up on {endpoint} after {cfg.max_retries} retries: {last_err}")
 
     @staticmethod
     def _is_transient(error_text: str) -> bool:

@@ -25,12 +25,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from tqdm import tqdm
 
-from .arctic_client import ArcticClient
+from .arctic_client import ArcticClient, ArcticShiftError
 from .backfill import _paginate
 from .cache import Cache
 from .config import Config
+from .logging_util import get_logger
 from .reconstruct import reconstruct_subreddit
 from .writer import JsonlWriter
+
+log = get_logger()
 
 
 def _make_shards(since: int, before: int, n: int) -> list[tuple[int, int]]:
@@ -50,11 +53,15 @@ def _make_shards(since: int, before: int, n: int) -> list[tuple[int, int]]:
 
 def _run_shard(cfg: Config, kind: str, subreddit: str, shard_idx: int, start: int,
                end: int, cache: Cache, writer: JsonlWriter, counter: dict,
-               lock: threading.Lock, pbar: tqdm) -> int:
-    """Paginate one time-slice for one kind. Own client => concurrent pacing."""
+               lock: threading.Lock, pbar: tqdm, incremental: bool) -> int:
+    """Paginate one time-slice for one kind. Own client => concurrent pacing.
+
+    A finished shard is skipped unless ``incremental`` is set, in which case it
+    resumes from its saved cursor to pick up items created since the last run.
+    """
     cursor_key = f"{kind}#{shard_idx}"
     saved_start, done = cache.get_cursor(subreddit, cursor_key, start)
-    if done:
+    if done and not incremental:
         return 0
     client = ArcticClient(cfg, use_http_cache=False)  # avoid sqlite-cache write contention
     if kind == "posts":
@@ -88,34 +95,61 @@ def _run_shard(cfg: Config, kind: str, subreddit: str, shard_idx: int, start: in
 
 def backfill_kind_parallel(cfg: Config, cache: Cache, writer: JsonlWriter,
                            subreddit: str, kind: str, since: int, before: int,
-                           workers: int) -> int:
+                           workers: int, incremental: bool = False) -> int:
+    """Run all shards for one kind concurrently.
+
+    A shard that exhausts its retries does not abort the run: the exception is
+    caught, logged, and the remaining shards still complete. Each shard's cursor
+    is persisted as it goes, so a failed slice is resumed on the next run rather
+    than lost. Returns the count of newly-inserted rows across successful shards.
+    """
     shards = _make_shards(since, before, workers)
     counter = {kind: 0}
     lock = threading.Lock()
     pbar = tqdm(desc=f"{subreddit} {kind} x{len(shards)}", unit=kind[:4], leave=False)
     new_total = 0
+    failures = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = [
+        futures = {
             ex.submit(_run_shard, cfg, kind, subreddit, i, s, e, cache, writer,
-                      counter, lock, pbar)
+                      counter, lock, pbar, incremental): i
             for i, (s, e) in enumerate(shards)
-        ]
+        }
         for f in as_completed(futures):
-            new_total += f.result()
+            idx = futures[f]
+            try:
+                new_total += f.result()
+            except ArcticShiftError as e:
+                failures += 1
+                log.warning("[backfill] r/%s %s shard #%d failed (will resume next run): %s",
+                            subreddit, kind, idx, e)
     pbar.close()
+    if failures:
+        log.warning("[backfill] r/%s %s: %d/%d shards failed; re-run to finish them.",
+                    subreddit, kind, failures, len(shards))
     return new_total
 
 
 def backfill_subreddit_parallel(cfg: Config, cache: Cache, subreddit: str,
-                                since: int, before: int, workers: int) -> dict:
+                                since: int, before: int, workers: int,
+                                incremental: bool = False) -> dict:
     writer = JsonlWriter(cfg, subreddit)
     result: dict = {"posts": 0, "comments": 0, "threads": 0}
+    if cfg.subreddit_meta:
+        from .backfill import backfill_meta
+        client = ArcticClient(cfg)
+        try:
+            result["meta"] = 1 if backfill_meta(client, cache, subreddit) else 0
+        finally:
+            client.close()
     if cfg.fetch_posts:
         result["posts"] = backfill_kind_parallel(cfg, cache, writer, subreddit,
-                                                 "posts", since, before, workers)
+                                                 "posts", since, before, workers,
+                                                 incremental)
     if cfg.fetch_comments:
         result["comments"] = backfill_kind_parallel(cfg, cache, writer, subreddit,
-                                                    "comments", since, before, workers)
+                                                    "comments", since, before, workers,
+                                                    incremental)
     # threads are rebuilt offline from the flat comments (free)
     if cfg.reconstruct_threads and cfg.fetch_comments:
         rec = reconstruct_subreddit(cfg, cache, subreddit)

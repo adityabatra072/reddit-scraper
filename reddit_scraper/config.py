@@ -75,11 +75,11 @@ def parse_timespec(spec: Any, *, is_since: bool) -> int:
     try:
         dt = datetime.strptime(s, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         return int(dt.timestamp())
-    except ValueError:
+    except ValueError as e:
         raise SystemExit(
             f"Cannot understand date '{spec}'. Use e.g. '2y', '90d', "
             f"'2024-01-31', an epoch number, 'now', or 'all'."
-        )
+        ) from e
 
 
 @dataclass
@@ -199,7 +199,8 @@ def load(yaml_path: str | Path | None = None, overrides: dict | None = None) -> 
         until=until,
         fetch_posts=bool(pick("fetch_posts", "fetch", "posts", default=True)),
         fetch_comments=bool(pick("fetch_comments", "fetch", "comments", default=True)),
-        reconstruct_threads=bool(pick("reconstruct_threads", "fetch", "reconstruct_threads", default=True)),
+        reconstruct_threads=bool(
+            pick("reconstruct_threads", "fetch", "reconstruct_threads", default=True)),
         api_trees=bool(pick("api_trees", "fetch", "api_trees", default=False)),
         subreddit_meta=bool(pick("subreddit_meta", "fetch", "subreddit_meta", default=False)),
         live_enabled=bool(pick("live_enabled", "live_refresh", "enabled", default=False)),
@@ -207,7 +208,8 @@ def load(yaml_path: str | Path | None = None, overrides: dict | None = None) -> 
         live_min_delay=float(_deep_get(raw, "live_refresh", "min_delay", default=2.0)),
         live_max_delay=float(_deep_get(raw, "live_refresh", "max_delay", default=5.0)),
         live_headless=bool(pick("live_headless", "live_refresh", "headless", default=True)),
-        live_use_proxies=bool(pick("live_use_proxies", "live_refresh", "use_proxies", default=False)),
+        live_use_proxies=bool(
+            pick("live_use_proxies", "live_refresh", "use_proxies", default=False)),
         live_limit=pick("live_limit", "live_refresh", "limit", default=None),
         workers=int(pick("workers", "workers", default=1)),
         data_dir=data_dir,

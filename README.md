@@ -20,14 +20,15 @@ Everything is driven by a single `config.yaml`, and every setting can be overrid
 Requires Python 3.10+.
 
 ```bash
-git clone https://github.com/<your-username>/reddit-scraper.git
+git clone https://github.com/adityabatra072/reddit-scraper.git
 cd reddit-scraper
-pip install -r requirements.txt
+pip install -e .            # installs the `reddit-scraper` command
 ```
 
-The `--live` score refresh feature additionally needs a Chromium browser:
+The optional `--live` score refresh feature needs Playwright and a Chromium browser:
 
 ```bash
+pip install -e ".[live]"
 playwright install chromium
 ```
 
@@ -36,10 +37,12 @@ playwright install chromium
 Edit `config.yaml` to list the subreddits and date range you want, then run:
 
 ```bash
-python -m reddit_scraper
+reddit-scraper            # or: python -m reddit_scraper
 ```
 
 Output lands in `./data/<subreddit>/` (JSONL) and `./scraper.db` (SQLite).
+
+Add `-v` for verbose (DEBUG) logging or `-q` to show warnings and errors only.
 
 ## Usage
 
@@ -121,7 +124,18 @@ The pipeline is a set of small, single-responsibility modules under `reddit_scra
 | `reconstruct.py` | offline nested-thread reconstruction from flat comments |
 | `writer.py` | append-only JSONL writers and CSV export |
 | `live_refresh.py` | Playwright-based live score refresh |
+| `logging_util.py` | tqdm-aware logging setup |
 | `__main__.py` | CLI entry point and stage orchestration |
+
+## Development
+
+```bash
+pip install -e ".[dev]"   # editable install + pytest, ruff, playwright
+pytest                    # run the (offline) test suite
+ruff check .              # lint
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for details. CI runs lint and tests across Python 3.10–3.13.
 
 ## Notes & etiquette
 

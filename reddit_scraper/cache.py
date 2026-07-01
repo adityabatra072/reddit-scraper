@@ -16,9 +16,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterable, Iterator
 
 from .config import Config
 
@@ -71,6 +71,15 @@ CREATE TABLE IF NOT EXISTS fetch_cursor (
     done            INTEGER NOT NULL DEFAULT 0,
     updated_at      INTEGER NOT NULL,
     PRIMARY KEY (subreddit, kind)
+);
+
+CREATE TABLE IF NOT EXISTS subreddit_meta (
+    subreddit       TEXT PRIMARY KEY,
+    subscribers     INTEGER,
+    created_utc     INTEGER,
+    public_description TEXT,
+    meta_json       TEXT NOT NULL,
+    fetched_at      INTEGER NOT NULL
 );
 """
 
@@ -159,7 +168,8 @@ class Cache:
             self.conn.commit()
             return self.conn.total_changes - before
 
-    def save_comment_tree(self, link_id: str, subreddit: str, tree: object, fetched_at: int) -> None:
+    def save_comment_tree(self, link_id: str, subreddit: str, tree: object,
+                          fetched_at: int) -> None:
         with self._lock:
             self.conn.execute(
                 """INSERT INTO comment_trees (link_id, subreddit, tree_json, fetched_at)
@@ -174,6 +184,30 @@ class Cache:
         with self._lock:
             cur = self.conn.execute("SELECT 1 FROM comment_trees WHERE link_id=?", (link_id,))
             return cur.fetchone() is not None
+
+    def save_subreddit_meta(self, subreddit: str, meta: dict, fetched_at: int) -> None:
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO subreddit_meta
+                       (subreddit, subscribers, created_utc, public_description,
+                        meta_json, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(subreddit) DO UPDATE SET
+                       subscribers=excluded.subscribers,
+                       created_utc=excluded.created_utc,
+                       public_description=excluded.public_description,
+                       meta_json=excluded.meta_json,
+                       fetched_at=excluded.fetched_at;""",
+                (
+                    subreddit,
+                    meta.get("subscribers"),
+                    int(meta["created_utc"]) if meta.get("created_utc") else None,
+                    meta.get("public_description"),
+                    json.dumps(meta, ensure_ascii=False),
+                    fetched_at,
+                ),
+            )
+            self.conn.commit()
 
     def update_live_counts(self, post_id: str, score: int | None,
                            num_comments: int | None, refreshed_at: int) -> None:
@@ -246,31 +280,68 @@ class Cache:
         return out
 
     def post_ids_missing_tree(self, subreddit: str) -> list[str]:
-        cur = self.conn.execute(
-            """SELECT p.id FROM posts p
-               LEFT JOIN comment_trees t ON t.link_id = p.id
-               WHERE p.subreddit = ? AND t.link_id IS NULL
-               ORDER BY p.created_utc ASC;""",
-            (subreddit,),
-        )
-        return [r["id"] for r in cur.fetchall()]
+        with self._lock:
+            cur = self.conn.execute(
+                """SELECT p.id FROM posts p
+                   LEFT JOIN comment_trees t ON t.link_id = p.id
+                   WHERE p.subreddit = ? AND t.link_id IS NULL
+                   ORDER BY p.created_utc ASC;""",
+                (subreddit,),
+            )
+            return [r["id"] for r in cur.fetchall()]
 
     def stats(self, subreddit: str | None = None) -> dict:
         where = "WHERE subreddit=?" if subreddit else ""
         args = (subreddit,) if subreddit else ()
-        posts = self.conn.execute(f"SELECT COUNT(*) c FROM posts {where}", args).fetchone()["c"]
-        comments = self.conn.execute(f"SELECT COUNT(*) c FROM comments {where}", args).fetchone()["c"]
-        trees = self.conn.execute(f"SELECT COUNT(*) c FROM comment_trees {where}", args).fetchone()["c"]
-        return {"posts": posts, "comments": comments, "comment_trees": trees}
+        def _count(table: str) -> int:
+            return self.conn.execute(
+                f"SELECT COUNT(*) c FROM {table} {where}", args).fetchone()["c"]
+
+        with self._lock:
+            return {
+                "posts": _count("posts"),
+                "comments": _count("comments"),
+                "comment_trees": _count("comment_trees"),
+            }
 
     def iter_rows(self, table: str, subreddit: str):
-        """Yield sqlite3.Row for one subreddit's posts/comments (for CSV export)."""
+        """Yield sqlite3.Row for one subreddit's posts/comments (for CSV export).
+
+        Reads the full result set under the lock, then yields — so we never hold
+        an open cursor on the shared connection while the caller does other work.
+        """
         assert table in ("posts", "comments")
-        cur = self.conn.execute(
-            f"SELECT * FROM {table} WHERE subreddit=? ORDER BY created_utc ASC",
-            (subreddit,),
-        )
-        yield from cur
+        with self._lock:
+            rows = self.conn.execute(
+                f"SELECT * FROM {table} WHERE subreddit=? ORDER BY created_utc ASC",
+                (subreddit,),
+            ).fetchall()
+        yield from rows
+
+    def iter_comments_for_threads(self, subreddit: str):
+        """Yield (link_id, archive_json) rows for one subreddit, grouped by post.
+
+        Ordered by ``link_id`` then ``created_utc`` so all comments for a post
+        are contiguous and chronological — the shape ``reconstruct`` needs to
+        build one thread at a time without loading the whole sub into memory.
+
+        Uses a dedicated short-lived read connection rather than the shared
+        one, so it can stream lazily (huge subs have 1M+ comments — a single
+        ``fetchall`` would OOM a small box) without holding a cursor on the
+        connection the writer threads use.
+        """
+        ro = sqlite3.connect(self.db_path)
+        ro.row_factory = sqlite3.Row
+        try:
+            cur = ro.execute(
+                """SELECT link_id, archive_json
+                   FROM comments WHERE subreddit = ?
+                   ORDER BY link_id ASC, created_utc ASC""",
+                (subreddit,),
+            )
+            yield from cur
+        finally:
+            ro.close()
 
     def close(self) -> None:
         self.conn.close()

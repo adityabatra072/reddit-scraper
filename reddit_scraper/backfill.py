@@ -85,6 +85,18 @@ def _backfill_kind(cfg: Config, client: ArcticClient, cache: Cache, writer: Json
     return new_total
 
 
+def backfill_meta(client: ArcticClient, cache: Cache, subreddit: str) -> bool:
+    """Fetch and store one-shot subreddit metadata (subscribers, created, etc.).
+
+    Returns True if metadata was found and saved.
+    """
+    meta = client.subreddit_meta(subreddit)
+    if not meta:
+        return False
+    cache.save_subreddit_meta(subreddit, meta, int(time.time()))
+    return True
+
+
 def backfill_trees(cfg: Config, client: ArcticClient, cache: Cache, writer: JsonlWriter,
                    subreddit: str) -> int:
     """Fetch full nested comment trees for posts that don't yet have one."""
@@ -105,6 +117,8 @@ def backfill_subreddit(cfg: Config, client: ArcticClient, cache: Cache, subreddi
                        since: int, before: int, incremental: bool = False) -> dict:
     writer = JsonlWriter(cfg, subreddit)
     result: dict = {}
+    if cfg.subreddit_meta:
+        result["meta"] = 1 if backfill_meta(client, cache, subreddit) else 0
     if cfg.fetch_posts:
         result["posts"] = _backfill_kind(cfg, client, cache, writer, subreddit,
                                          "posts", since, before, incremental)

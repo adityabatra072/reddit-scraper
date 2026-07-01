@@ -16,6 +16,29 @@ import time
 
 from .cache import Cache
 from .config import Config, now_epoch
+from .logging_util import get_logger
+
+log = get_logger()
+
+# A realistic desktop-Chrome fingerprint. Reddit blocks the headless default,
+# so this UA/viewport must be applied to *every* browser context we create —
+# including ones we relaunch after a proxy rotation.
+_CONTEXT_KWARGS = {
+    "user_agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "viewport": {"width": 1280, "height": 900},
+}
+
+
+def _to_int(value: object, *, signed: bool = False) -> int | None:
+    """Parse a DOM attribute string into an int, or None if not numeric."""
+    if value is None:
+        return None
+    s = str(value)
+    check = s.lstrip("-") if signed else s
+    return int(s) if check.isdigit() else None
 
 
 def _load_proxies(cfg: Config) -> list[str]:
@@ -32,7 +55,8 @@ def refresh_recent(cfg: Config, cache: Cache, subreddits: list[str] | None = Non
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return {"error": "playwright not installed; run: pip install playwright && playwright install chromium"}
+        return {"error": "playwright not installed; run: "
+                         "pip install playwright && playwright install chromium"}
 
     cutoff = now_epoch() - cfg.live_window_days * 24 * 3600
     posts = cache.posts_needing_live_refresh(cutoff, subreddits)
@@ -51,13 +75,7 @@ def refresh_recent(cfg: Config, cache: Cache, subreddits: list[str] | None = Non
         if proxies:
             launch_kwargs["proxy"] = {"server": proxies[0]}
         browser = p.chromium.launch(**launch_kwargs)
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 900},
-        )
+        context = browser.new_context(**_CONTEXT_KWARGS)
         page = context.new_page()
 
         for row in posts:
@@ -80,8 +98,8 @@ def refresh_recent(cfg: Config, cache: Cache, subreddits: list[str] | None = Non
                     }"""
                 )
                 if data and data.get("score") is not None:
-                    score = int(data["score"]) if str(data["score"]).lstrip("-").isdigit() else None
-                    nc = int(data["comments"]) if data.get("comments") and str(data["comments"]).isdigit() else None
+                    score = _to_int(data.get("score"), signed=True)
+                    nc = _to_int(data.get("comments"))
                     cache.update_live_counts(row["id"], score, nc, now_epoch())
                     refreshed += 1
                 else:
@@ -92,12 +110,13 @@ def refresh_recent(cfg: Config, cache: Cache, subreddits: list[str] | None = Non
                 if proxies:
                     proxy_idx = (proxy_idx + 1) % len(proxies)
                     try:
-                        context.close(); browser.close()
+                        context.close()
+                        browser.close()
                     except Exception:
                         pass
                     browser = p.chromium.launch(headless=headless,
                                                 proxy={"server": proxies[proxy_idx]})
-                    context = browser.new_context()
+                    context = browser.new_context(**_CONTEXT_KWARGS)
                     page = context.new_page()
             time.sleep(random.uniform(cfg.live_min_delay, cfg.live_max_delay))
 
