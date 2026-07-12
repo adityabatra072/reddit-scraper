@@ -1,4 +1,4 @@
-"""Stage 2 — live refresh of upvote/comment counts via a real browser.
+"""Stage 2 - live refresh of upvote/comment counts via a real browser.
 
 Arctic Shift stores ``score``/``num_comments`` shortly after a post is created,
 so recent posts can have stale counts. Reddit's no-auth ``.json`` endpoints are
@@ -21,7 +21,7 @@ from .logging_util import get_logger
 log = get_logger()
 
 # A realistic desktop-Chrome fingerprint. Reddit blocks the headless default,
-# so this UA/viewport must be applied to *every* browser context we create —
+# so this UA/viewport must be applied to *every* browser context we create -
 # including ones we relaunch after a proxy rotation.
 _CONTEXT_KWARGS = {
     "user_agent": (

@@ -15,23 +15,21 @@ so a killed run resumes each slice independently. SQLite ids dedup, so any
 overlap at slice boundaries is harmless.
 
 Resumability across separate runs is where this gets subtle. A shard's cursor
-key is only meaningful for the exact ``[since, before)`` that produced it —
+key is only meaningful for the exact ``[since, before)`` that produced it:
 ``before`` is usually "now", which is different on every run, so re-sharding
 and reusing old per-shard cursors against the new geometry silently drops
 whatever falls between a new shard's start and the stale cursor's value. And
 a subreddit's *first* backfill may use a narrower ``since`` than a later run
-(e.g. the config default "2y" today, "all" next month) — treating "the old
+(e.g. the config default "2y" today, "all" next month); treating "the old
 shards all finished" as "everything is covered" then skips the entire older
 history the narrower run never fetched in the first place.
 
-``_backfill_kind_auto`` is the entry point that avoids both problems: it
-tracks the exact ``[since, until)`` range already proven fetched
-(``Cache.get_covered_range``) and only ever re-shards the genuinely missing
-part — an older gap (if ``since`` widened) via its own namespaced shard
-cursors, or a newer tail (if ``before`` advanced, i.e. normal re-runs of an
-active subreddit) via a cheap non-sharded catch-up cursor. Every call site in
-this codebase should go through it rather than calling
-``backfill_kind_parallel`` directly.
+``_backfill_kind_auto`` is the entry point that avoids both problems by
+routing through ``coverage.backfill_kind_auto`` (shared with the sequential
+driver): it tracks the exact ``[since, until)`` range already proven fetched
+and only ever fetches the genuinely missing part, with the window frozen for
+the duration of a multi-run backfill. Every call site in this codebase
+should go through it rather than calling ``backfill_kind_parallel`` directly.
 """
 from __future__ import annotations
 
@@ -45,6 +43,7 @@ from .arctic_client import ArcticClient, ArcticShiftError
 from .backfill import _paginate
 from .cache import Cache
 from .config import Config
+from .coverage import backfill_kind_auto
 from .logging_util import get_logger
 from .reconstruct import reconstruct_subreddit
 from .writer import JsonlWriter
@@ -72,15 +71,14 @@ def _run_shard(cfg: Config, kind: str, subreddit: str, shard_prefix: str, shard_
                lock: threading.Lock, pbar: tqdm) -> int:
     """Paginate one time-slice for one kind. Own client => concurrent pacing.
 
-    Called only against a ``[start, end)`` whose ``end`` was frozen by
-    ``get_or_set_target_before`` for the duration of this particular sharded
-    backfill (see ``backfill_kind_parallel``). So a shard marked done here
-    really is done for good — there is no reshaped window it could need
-    resuming against.
+    Called only against a ``[start, end)`` window that was frozen by
+    ``coverage._run_frozen_window`` for the duration of this particular
+    sharded backfill. So a shard marked done here really is done for good;
+    there is no reshaped window it could need resuming against.
 
     ``shard_prefix`` namespaces the cursor key so that a later, separate
     sharded backfill over a *different* range (e.g. an older gap discovered
-    after widening ``since``) never collides with — or gets mistaken for —
+    after widening ``since``) never collides with, or gets mistaken for,
     this one's shard cursors.
     """
     cursor_key = f"{shard_prefix}#{shard_idx}"
@@ -122,14 +120,14 @@ def backfill_kind_parallel(cfg: Config, cache: Cache, writer: JsonlWriter,
                            workers: int, shard_prefix: str | None = None) -> tuple[int, bool]:
     """Run all shards for one kind concurrently, covering ``[since, before)``.
 
-    Only call this for a range that has never been fully completed before —
+    Only call this for a range that has never been fully completed before;
     callers own tracking that via ``covered_range`` (see ``_backfill_kind_auto``).
     Shard boundaries are a pure function of ``(since, before, workers)``; two
     calls with different ``before`` values (e.g. two separate runs, each using
     "now") produce *different* shard geometries but would write to the *same*
     per-shard cursor keys if reusing ``kind`` as the prefix. Resuming those
     cursors against a reshaped window silently drops whatever lies between a
-    new shard's start and the old cursor's value — a real, silent data-loss
+    new shard's start and the old cursor's value: a real, silent data-loss
     bug (the one this module exists to avoid). ``shard_prefix`` (default
     ``kind``) namespaces the cursor keys so a distinct call for a distinct
     range never collides with another's.
@@ -172,7 +170,7 @@ def _catchup_kind(cfg: Config, cache: Cache, writer: JsonlWriter, subreddit: str
     """Sequentially fetch a tail beyond an already-covered range.
 
     Once a sharded backfill has covered up to some point, new activity since
-    then is a small delta relative to the whole history — even for a busy
+    then is a small delta relative to the whole history - even for a busy
     subreddit, "posts/comments made since I last scraped" is nowhere near
     "every post/comment ever". A single non-sharded cursor (``{kind}_tail``)
     is fast enough for that delta and, critically, is always resumed against
@@ -214,62 +212,22 @@ def _catchup_kind(cfg: Config, cache: Cache, writer: JsonlWriter, subreddit: str
 
 def _backfill_kind_auto(cfg: Config, cache: Cache, writer: JsonlWriter, subreddit: str,
                         kind: str, since: int, before: int, workers: int) -> int:
-    """Cover ``[since, before)`` for (subreddit, kind), doing only the missing part.
+    """Cover ``[since, before)`` for (subreddit, kind), fetching only the missing part.
 
-    ``covered_range`` records the ``[since, until)`` already fully fetched.
-    Three cases, all handled without ever re-sharding a window whose bounds
-    have shifted from a previous run (the bug this module exists to avoid):
-
-      * nothing covered yet -> one sharded backfill of the whole request.
-      * request's ``since`` is older than what's covered -> an *older-gap*
-        sharded backfill for ``[since, covered_since)`` first (its own
-        namespaced shard cursors, so they can't collide with the original
-        backfill's). This is the case that was previously missed entirely:
-        a subreddit first scraped with a narrow ``since`` (e.g. the default
-        "2y") and later re-run with a wider one (e.g. "all") needs its older
-        history actually fetched, not just assumed complete because the
-        original shards were "done".
-      * request's ``before`` is newer than what's covered -> a cheap,
-        non-sharded tail catch-up for ``[covered_until, before)``.
-
-    The covered range only ever grows to match what has actually been proven
-    fetched; a failed older-gap or tail fetch leaves it untouched so the next
-    run retries exactly the missing part.
+    The routing (what is already covered, which gap/tail to fetch, window
+    freezing across resumed runs) lives in ``coverage.backfill_kind_auto`` and
+    is shared with the sequential driver; this wires in the parallel-specific
+    fetchers: a sharded window fetch and a single-cursor tail catch-up.
     """
-    covered = cache.get_covered_range(subreddit, kind)
-    total = 0
-    now = int(time.time())
+    def fetch_window(s: int, b: int, prefix: str) -> tuple[int, bool]:
+        return backfill_kind_parallel(cfg, cache, writer, subreddit, kind,
+                                      s, b, workers, shard_prefix=prefix)
 
-    if covered is None:
-        frozen_before = cache.get_or_set_target_before(subreddit, kind, before, now)
-        new_rows, ok = backfill_kind_parallel(cfg, cache, writer, subreddit, kind,
-                                              since, frozen_before, workers)
-        total += new_rows
-        if ok:
-            cache.set_covered_range(subreddit, kind, since, frozen_before, now)
-            cache.clear_target_before(subreddit, kind, now)
-        return total
+    def catchup(s: int, b: int) -> int:
+        return _catchup_kind(cfg, cache, writer, subreddit, kind, s, b)
 
-    cov_since, cov_until = covered
-
-    if since < cov_since:
-        older_prefix = f"{kind}_older"
-        frozen_gap_end = cache.get_or_set_target_before(subreddit, older_prefix, cov_since, now)
-        new_rows, ok = backfill_kind_parallel(cfg, cache, writer, subreddit, kind,
-                                              since, frozen_gap_end, workers,
-                                              shard_prefix=older_prefix)
-        total += new_rows
-        if ok:
-            cov_since = min(cov_since, since)
-            cache.set_covered_range(subreddit, kind, cov_since, cov_until, now)
-            cache.clear_target_before(subreddit, older_prefix, now)
-
-    if before > cov_until:
-        new_rows = _catchup_kind(cfg, cache, writer, subreddit, kind, cov_until, before)
-        total += new_rows
-        cache.set_covered_range(subreddit, kind, cov_since, before, now)
-
-    return total
+    return backfill_kind_auto(cache, subreddit, kind, since, before,
+                              fetch_window, catchup)
 
 
 def backfill_subreddit_parallel(cfg: Config, cache: Cache, subreddit: str,

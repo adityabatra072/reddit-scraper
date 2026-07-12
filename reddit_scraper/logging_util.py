@@ -1,7 +1,7 @@
 """Shared logging setup.
 
 The pipeline prints progress via tqdm (see ``backfill.py`` / ``parallel.py``);
-everything else — stage banners, per-subreddit results, warnings, errors — goes
+everything else - stage banners, per-subreddit results, warnings, errors - goes
 through the standard ``logging`` module so verbosity is controllable with
 ``--verbose`` / ``--quiet`` and log lines interleave cleanly with tqdm bars.
 """

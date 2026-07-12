@@ -17,7 +17,7 @@ def test_shards_are_contiguous_and_cover_window():
     assert len(shards) == 4
     assert shards[0][0] == 0
     assert shards[-1][1] == 100
-    # each end is the next start — no gaps, no overlap
+    # each end is the next start - no gaps, no overlap
     for (_, a_end), (b_start, _) in zip(shards, shards[1:], strict=False):
         assert a_end == b_start
 

@@ -86,7 +86,7 @@ class ArcticClient:
                     raise ArcticShiftError(f"{endpoint}: {err} (params={params})")
                 return payload
             # Arctic Shift uses 422 for a server query timeout with a JSON body
-            # like {"error":"Timeout. Maybe slow down a bit"} — that is transient
+            # like {"error":"Timeout. Maybe slow down a bit"} - that is transient
             # and must be retried, not treated as fatal.
             if resp.status_code in (429, 422) or resp.status_code >= 500:
                 last_err = ArcticShiftError(

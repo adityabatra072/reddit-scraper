@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in improving reddit-scraper. Contributions of all kinds are welcome — bug reports, features, docs, and tests.
+Thanks for your interest in improving reddit-scraper. Contributions of all kinds are welcome - bug reports, features, docs, and tests.
 
 ## Development setup
 
@@ -19,7 +19,7 @@ This installs the package in editable mode along with the dev tools (`pytest`, `
 pytest
 ```
 
-The test suite is offline and fast — it covers date parsing, config override precedence, time-shard splitting, thread reconstruction, and the SQLite cache. No network access is required.
+The test suite is offline and fast - it covers date parsing, config override precedence, time-shard splitting, thread reconstruction, and the SQLite cache. No network access is required.
 
 ## Linting
 
@@ -35,7 +35,7 @@ CI runs both `ruff check` and `pytest` across Python 3.10–3.13; please make su
 - Anything user-facing should be driven by `config.yaml` with a matching CLI override.
 - Progress goes through `tqdm`; everything else uses the package logger (`reddit_scraper.logging_util`), not `print`.
 - Add tests for new pure-function logic.
-- Please be considerate of Arctic Shift's infrastructure — don't add defaults that hammer the API beyond its published limits.
+- Please be considerate of Arctic Shift's infrastructure - don't add defaults that hammer the API beyond its published limits.
 
 ## Reporting bugs
 

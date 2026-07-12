@@ -1,13 +1,16 @@
-"""Stage 1 — archive backfill via Arctic Shift (sequential, single worker).
+"""Stage 1: archive backfill via Arctic Shift (sequential, single worker).
 
 For each subreddit, over the configured [since, until] window:
   1. paginate all posts (sort=asc, created_utc cursor) -> SQLite + JSONL
   2. paginate all comments the same way -> SQLite + JSONL
   3. (optional) fetch the full nested comment tree per post -> SQLite + JSONL
 
-Everything is resumable: the (subreddit, kind) cursor records the last
-created_utc processed, and SQLite ids dedup so re-runs are cheap and JSONL gets
-only genuinely-new records appended.
+Everything is resumable: cursors record the last created_utc processed, and
+SQLite ids dedup so re-runs are cheap and JSONL gets only genuinely-new
+records appended. Which part of the window actually needs fetching on a
+repeat run (older gap after widening ``since``, newer tail as time passes)
+is decided by ``coverage.backfill_kind_auto``, shared with the parallel
+driver.
 
 For large subreddits prefer the parallel driver (``parallel.py``); this module
 is the simple path used when workers <= 1.
@@ -21,6 +24,7 @@ from tqdm import tqdm
 from .arctic_client import ArcticClient
 from .cache import Cache
 from .config import Config
+from .coverage import backfill_kind_auto
 from .writer import JsonlWriter
 
 
@@ -47,19 +51,14 @@ def _paginate(fetch, subreddit: str, start_after: int, before: int, page_limit: 
         after = next_after
 
 
-def _backfill_kind(cfg: Config, client: ArcticClient, cache: Cache, writer: JsonlWriter,
-                   subreddit: str, kind: str, since: int, before: int) -> int:
-    """Generic post/comment backfill paginating ascending by created_utc.
+def _fetch_window(cfg: Config, client: ArcticClient, cache: Cache, writer: JsonlWriter,
+                  subreddit: str, kind: str, since: int, before: int,
+                  cursor_key: str, desc: str) -> int:
+    """Paginate one [since, before) window ascending by created_utc.
 
-    This cursor tracks one absolute ``created_utc`` value (unlike the sharded
-    parallel driver, which splits the window and so must not blindly resume a
-    "done" cursor against a reshaped window — see ``parallel.py``). Here that
-    hazard doesn't exist: resuming past a "done" cursor is always safe because
-    it always means "fetch anything newer than last time", regardless of what
-    ``before`` resolved to on this run. So a finished window is only ever
-    skipped when there is provably nothing new to fetch (``before`` hasn't
-    moved past the saved cursor) — a repeat run of an active subreddit still
-    picks up whatever was posted since last time, automatically.
+    Resume state is a single cursor under ``cursor_key``: the last created_utc
+    processed, plus a done flag set when the window is exhausted. A done
+    cursor is skipped only when the requested window doesn't extend past it.
     """
     if kind == "posts":
         fetch = lambda a, b: client.search_posts(subreddit, a, b)
@@ -68,12 +67,13 @@ def _backfill_kind(cfg: Config, client: ArcticClient, cache: Cache, writer: Json
         fetch = lambda a, b: client.search_comments(subreddit, a, b)
         upsert, write, unit = cache.upsert_comments, writer.write_comments, "cmt"
 
-    start, done = cache.get_cursor(subreddit, kind, since)
+    saved, done = cache.get_cursor(subreddit, cursor_key, since)
+    start = max(saved, since)
     if done and before <= start:
         return 0
 
     new_total = 0
-    pbar = tqdm(desc=f"{subreddit} {kind}", unit=unit, leave=False)
+    pbar = tqdm(desc=desc, unit=unit, leave=False)
     for page, last_created in _paginate(fetch, subreddit, start, before, cfg.page_limit):
         fetched = int(time.time())
         ids = [r["id"] for r in page]
@@ -81,12 +81,36 @@ def _backfill_kind(cfg: Config, client: ArcticClient, cache: Cache, writer: Json
         fresh = [r for r in page if r["id"] not in already]
         upsert(page, subreddit, fetched)
         write(fresh)
-        cache.set_cursor(subreddit, kind, int(last_created), False, fetched)
+        cache.set_cursor(subreddit, cursor_key, int(last_created), False, fetched)
         new_total += len(fresh)
         pbar.update(len(page))
-    cache.set_cursor(subreddit, kind, before, True, int(time.time()))
+    cache.set_cursor(subreddit, cursor_key, before, True, int(time.time()))
     pbar.close()
     return new_total
+
+
+def _backfill_kind(cfg: Config, client: ArcticClient, cache: Cache, writer: JsonlWriter,
+                   subreddit: str, kind: str, since: int, before: int) -> int:
+    """Cover [since, before) for one kind, fetching only the missing part.
+
+    Routing lives in ``coverage.backfill_kind_auto``, shared with the parallel
+    driver, so both drivers handle the same cases identically: a first
+    backfill (window frozen across resumed runs), an older gap when ``since``
+    widens between runs, and a newer tail when ``before`` advances. A single
+    ascending cursor per window is all this sequential driver needs.
+    """
+    def fetch_window(s: int, b: int, prefix: str) -> tuple[int, bool]:
+        n = _fetch_window(cfg, client, cache, writer, subreddit, kind, s, b,
+                          cursor_key=prefix, desc=f"{subreddit} {kind}")
+        return n, True
+
+    def catchup(s: int, b: int) -> int:
+        return _fetch_window(cfg, client, cache, writer, subreddit, kind, s, b,
+                             cursor_key=f"{kind}_tail",
+                             desc=f"{subreddit} {kind} (catch-up)")
+
+    return backfill_kind_auto(cache, subreddit, kind, since, before,
+                              fetch_window, catchup)
 
 
 def backfill_meta(client: ArcticClient, cache: Cache, subreddit: str) -> bool:

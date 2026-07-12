@@ -3,10 +3,10 @@
 The subreddit-wide ``comments/search`` sweep already captures every comment with
 its ``link_id`` (parent post, ``t3_...``) and ``parent_id`` (``t1_...`` for a
 reply, ``t3_...`` for a top-level comment). That is enough to rebuild the full
-nested thread for each post with zero extra network calls — far cheaper than the
+nested thread for each post with zero extra network calls - far cheaper than the
 per-post tree API endpoint (~1.5s each).
 
-Output: ``<data_dir>/<subreddit>/threads.jsonl`` — one line per post::
+Output: ``<data_dir>/<subreddit>/threads.jsonl`` - one line per post::
 
     {"link_id": "1abcde", "tree": [ {<comment>, "replies": [ ... ]}, ... ]}
 
@@ -39,7 +39,7 @@ def reconstruct_subreddit(cfg: Config, cache: Cache, subreddit: str) -> dict:
     """
     # Stream comments ordered by link_id so all comments for one post are
     # contiguous; build + flush one post's tree at a time. This keeps only a
-    # single post's comments in memory (huge subs have 1M+ comments — loading
+    # single post's comments in memory (huge subs have 1M+ comments - loading
     # them all at once OOMs a small box).
     rows = cache.iter_comments_for_threads(subreddit)
 

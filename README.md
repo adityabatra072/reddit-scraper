@@ -1,19 +1,20 @@
 # reddit-scraper
 
-A general-purpose, no-auth Reddit scraper built on the [Arctic Shift](https://arctic-shift.photon-reddit.com) archive. Point it at any subreddit and it will backfill every post and comment over a date range you choose — no Reddit account, API key, or OAuth app required.
+A general-purpose, no-auth Reddit scraper built on the [Arctic Shift](https://arctic-shift.photon-reddit.com) archive. Point it at any subreddit and it will backfill every post and comment over a date range you choose - no Reddit account, API key, or OAuth app required.
 
 Everything is driven by a single `config.yaml`, and every setting can be overridden from the command line.
 
 ## Features
 
-- **No authentication** — uses the public Arctic Shift archive, which mirrors Reddit in near real-time.
-- **Full backfill** — paginates every post and comment in a subreddit over any date window (`2y`, `90d`, an absolute date, or `all` the way back to 2005).
-- **Offline thread reconstruction** — rebuilds nested reply trees from the flat comment dump with zero extra network calls.
-- **Parallel** — time-shards the date window across worker threads for ~8x faster scraping on large subs.
-- **Resumable & idempotent** — SQLite is the source of truth; a killed run picks up exactly where it left off, and re-runs never duplicate data.
-- **Persistent HTTP cache** — identical queries are never re-issued across runs.
-- **Multiple output formats** — SQLite (always), JSONL (full fidelity), and optional flattened CSV.
-- **Optional live refresh** — opens a real browser (Playwright) to read up-to-the-minute score/comment counts for recent posts, since archived counts can be stale.
+- **No authentication** - uses the public Arctic Shift archive, which mirrors Reddit in near real-time.
+- **Full backfill** - paginates every post and comment in a subreddit over any date window (`2y`, `90d`, an absolute date, or `all` the way back to 2005).
+- **Offline thread reconstruction** - rebuilds nested reply trees from the flat comment dump with zero extra network calls.
+- **Parallel** - time-shards the date window across worker threads for ~8x faster scraping on large subs.
+- **Resumable & idempotent** - SQLite is the source of truth; a killed run picks up exactly where it left off, and re-runs never duplicate data.
+- **Incremental re-runs** - the scraper tracks exactly which date range it has already covered per subreddit, so repeat runs fetch only what's new (or the older history, if you widen `since`) instead of starting over.
+- **Persistent HTTP cache** - identical queries are never re-issued across runs.
+- **Multiple output formats** - SQLite (always), JSONL (full fidelity), and optional flattened CSV.
+- **Optional live refresh** - opens a real browser (Playwright) to read up-to-the-minute score/comment counts for recent posts, since archived counts can be stale.
 
 ## Installation
 
@@ -88,13 +89,13 @@ Run `python -m reddit_scraper --help` for the full flag list.
 
 `config.yaml` is fully commented. Key sections:
 
-- **`subreddits`** — list of subreddits to scrape.
-- **`since` / `until`** — the post/comment creation window. Accepts relative ages (`2y`, `18m`, `90d`, `12h`), absolute dates (`2024-01-31`), epoch seconds, `now`, and `all`.
-- **`fetch`** — toggle posts, comments, offline thread reconstruction, per-post API trees, and subreddit metadata independently.
-- **`live_refresh`** — optional browser-based score refresh for recent posts.
-- **`workers`** — number of concurrent time-sharded workers (Arctic Shift tolerates 10–20).
-- **`output`** — output directory, database path, and which formats (JSONL / CSV) to write.
-- **`network`** — pacing, retry, and rate-limit tuning (sane defaults; rarely need changing).
+- **`subreddits`** - list of subreddits to scrape.
+- **`since` / `until`** - the post/comment creation window. Accepts relative ages (`2y`, `18m`, `90d`, `12h`), absolute dates (`2024-01-31`), epoch seconds, `now`, and `all`.
+- **`fetch`** - toggle posts, comments, offline thread reconstruction, per-post API trees, and subreddit metadata independently.
+- **`live_refresh`** - optional browser-based score refresh for recent posts.
+- **`workers`** - number of concurrent time-sharded workers (Arctic Shift tolerates 10–20).
+- **`output`** - output directory, database path, and which formats (JSONL / CSV) to write.
+- **`network`** - pacing, retry, and rate-limit tuning (sane defaults; rarely need changing).
 
 ## Output
 
@@ -118,9 +119,10 @@ The pipeline is a set of small, single-responsibility modules under `reddit_scra
 |--------|------|
 | `config.py` | loads YAML, resolves date specs, applies CLI overrides into one `Config` object |
 | `arctic_client.py` | HTTP client for the Arctic Shift API (caching, pacing, rate-limit-aware retries) |
-| `cache.py` | SQLite source-of-truth (posts, comments, trees, resume cursors) |
+| `cache.py` | SQLite source-of-truth (posts, comments, trees, resume cursors, covered ranges) |
 | `backfill.py` | sequential single-worker backfill |
 | `parallel.py` | time-sharded parallel backfill driver |
+| `coverage.py` | covered-range routing shared by both drivers (fetch only what's missing) |
 | `reconstruct.py` | offline nested-thread reconstruction from flat comments |
 | `writer.py` | append-only JSONL writers and CSV export |
 | `live_refresh.py` | Playwright-based live score refresh |
@@ -139,9 +141,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for details. CI runs lint and tests acros
 
 ## Notes & etiquette
 
-- This tool reads a public third-party archive. Please be respectful of Arctic Shift's infrastructure — the default pacing and worker counts stay well within its published limits. Don't crank the workers into the hundreds.
+- This tool reads a public third-party archive. Please be respectful of Arctic Shift's infrastructure - the default pacing and worker counts stay well within its published limits. Don't crank the workers into the hundreds.
 - Scraped data is subject to Reddit's content policy and the rights of the original authors. Use it responsibly.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

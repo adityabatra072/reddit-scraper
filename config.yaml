@@ -1,5 +1,5 @@
 # ============================================================================
-#  reddit-scraper — single control file. Edit this, run `python -m reddit_scraper`.
+#  reddit-scraper - single control file. Edit this, run `python -m reddit_scraper`.
 #  Every value here can also be overridden on the command line (see README).
 #  Nothing else needs editing to scrape any subreddit. No auth / API key needed.
 # ============================================================================
@@ -18,7 +18,7 @@ subreddits:
 #   - an absolute date: "2024-01-31"  (UTC midnight)
 #   - an epoch second:  1704067200
 #   - "now"  (only meaningful for `until`)
-#   - "all"  (only meaningful for `since` — start from Reddit's beginning, 2005)
+#   - "all"  (only meaningful for `since` - start from Reddit's beginning, 2005)
 since: "2y"      # how far back to go. e.g. "2y" = past two years.
 until: "now"     # up to when. "now" = the moment you run it.
 
@@ -27,7 +27,7 @@ until: "now"     # up to when. "now" = the moment you run it.
 fetch:
   posts: true            # submissions (title, url, score, etc.)
   comments: true         # every comment, flat (this is what most analysis needs)
-  reconstruct_threads: true   # rebuild nested reply trees OFFLINE from comments — free & fast
+  reconstruct_threads: true   # rebuild nested reply trees OFFLINE from comments - free & fast
   api_trees: false       # ALSO pull nested trees from the API per-post. Slow (~1.5s/post).
                          #   Usually unnecessary because reconstruct_threads gives the same shape.
   subreddit_meta: false  # one-shot: subscriber count, created date, etc. per sub.
@@ -48,12 +48,12 @@ live_refresh:
 
 # --- PERFORMANCE ------------------------------------------------------------
 # Time-sharded parallelism: the date window is split into `workers` slices that
-# download concurrently — much faster on big subs. Set to 1 for gentle
+# download concurrently - much faster on big subs. Set to 1 for gentle
 # sequential scraping.
 #
 # Rough budget: each worker paces itself at ~1/min_request_interval req/s, so
 # total ≈ workers / min_request_interval req/s. With the defaults below
-# (8 workers, 0.25s) that's ~32 req/s ≈ 1920 req/min — just under Arctic
+# (8 workers, 0.25s) that's ~32 req/s ≈ 1920 req/min - just under Arctic
 # Shift's ~2000 req/min ceiling. If you raise `workers`, also raise
 # `network.min_request_interval` to stay under it (the client will still back
 # off reactively if the API signals it's being hit too hard).
@@ -64,8 +64,8 @@ output:
   data_dir: "./data"     # JSONL dumps land in <data_dir>/<subreddit>/
   db_path: "./scraper.db"  # SQLite source-of-truth (dedups everything, resumable)
   formats:               # which on-disk formats to write. sqlite is always written.
-    jsonl: true          # one JSON object per line — full fidelity, easy to stream
-    csv: false           # flattened posts.csv / comments.csv — easy for Excel/pandas
+    jsonl: true          # one JSON object per line - full fidelity, easy to stream
+    csv: false           # flattened posts.csv / comments.csv - easy for Excel/pandas
 
 # --- NETWORK TUNING (sane defaults; rarely need changing) -------------------
 network:

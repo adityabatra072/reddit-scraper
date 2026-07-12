@@ -10,6 +10,7 @@ posts          : one row per submission, full archive JSON + live-refreshed coun
 comments       : one row per comment (flat), full archive JSON
 comment_trees  : one row per submission, the nested tree JSON from /comments/tree
 fetch_cursor   : resume bookmarks per (subreddit, kind)
+covered_range  : the [since, until) window already fully fetched per (subreddit, kind)
 """
 from __future__ import annotations
 
@@ -272,14 +273,14 @@ class Cache:
            fully covered" (an earlier version of this migration did exactly
            that) ignores ``since`` entirely. A subreddit first scraped with
            the default ``since: 2y`` and later re-run with ``since: all`` would
-           still report every old shard as "done" — even though the entire
+           still report every old shard as "done", even though the entire
            multi-year history before the original ``since`` was never fetched.
            There is no reliable way to recover the original ``since`` from
            shard cursors alone (they only record each shard's end, not its
            start), so this class does not attempt to migrate old shard-cursor
            data into a covered range at all: an unrecorded range is always
            treated as *not* covered, and callers fall back to a full sharded
-           backfill (safe and idempotent — re-fetching a range that happens to
+           backfill (safe and idempotent: re-fetching a range that happens to
            overlap already-stored ids is a wasted request, never a duplicate row).
         """
         with self._lock:
@@ -302,27 +303,55 @@ class Cache:
             )
             self.conn.commit()
 
-    def get_or_set_target_before(self, subreddit: str, kind: str, before: int,
-                                 updated_at: int) -> int:
-        """Freeze the ``before`` of an in-progress sharded backfill.
+    def get_target_range(self, subreddit: str, prefix: str) -> tuple[int, int] | None:
+        """Return the frozen ``(since, before)`` of an in-progress backfill, if any.
 
-        A large subreddit's initial backfill can span multiple runs if some
-        shards fail. Each run re-resolves ``before`` (typically "now"), which
-        would otherwise reshape the shard split between attempts — the same
-        drift hazard described in ``get_covered_range``, just triggered by a
-        failed/resumed initial sync rather than a repeat incremental one.
-        Freezing the first attempt's ``before`` and reusing it on every resume
-        (until the range is recorded as fully covered) keeps the shard
-        geometry — and therefore every shard's cursor — self-consistent.
+        A large subreddit's initial backfill can span multiple runs if it is
+        killed or some shards fail. Each run re-resolves ``since``/``before``
+        from config (``before`` is typically "now"), which would otherwise
+        reshape the window between attempts: the same drift hazard described
+        in ``get_covered_range``, just triggered by a failed/resumed initial
+        sync rather than a repeat incremental one. Freezing the first
+        attempt's full range and reusing it on every resume (until the range
+        is recorded as fully covered) keeps the window, and therefore every
+        cursor derived from it, self-consistent. ``since`` is frozen for the
+        same reason as ``before``: editing config mid-backfill must not
+        reshape a window that cursors already point into.
         """
-        existing, done = self.get_cursor(subreddit, f"{kind}_target", default=-1)
-        if not done and existing >= 0:
-            return existing
-        self.set_cursor(subreddit, f"{kind}_target", before, False, updated_at)
-        return before
+        before, done_b = self.get_cursor(subreddit, f"{prefix}_target", default=-1)
+        since, done_s = self.get_cursor(subreddit, f"{prefix}_target_since", default=-1)
+        if done_b or before < 0 or done_s or since < 0:
+            return None
+        return since, before
 
-    def clear_target_before(self, subreddit: str, kind: str, updated_at: int) -> None:
-        self.set_cursor(subreddit, f"{kind}_target", 0, True, updated_at)
+    def set_target_range(self, subreddit: str, prefix: str, since: int, before: int,
+                         updated_at: int) -> None:
+        self.set_cursor(subreddit, f"{prefix}_target_since", since, False, updated_at)
+        self.set_cursor(subreddit, f"{prefix}_target", before, False, updated_at)
+
+    def clear_target_range(self, subreddit: str, prefix: str, updated_at: int) -> None:
+        self.set_cursor(subreddit, f"{prefix}_target_since", 0, True, updated_at)
+        self.set_cursor(subreddit, f"{prefix}_target", 0, True, updated_at)
+
+    def delete_cursors(self, subreddit: str, prefix: str) -> None:
+        """Delete the ``prefix`` cursor and every ``prefix#<i>`` shard cursor.
+
+        Called when a brand-new backfill window is about to start (or has just
+        finished) under ``prefix``. Any cursor already sitting there belongs to
+        some *other* window: a pre-``covered_range`` version of this scraper,
+        or an earlier, already-completed older-gap fetch. Resuming such a
+        cursor against the new window's geometry silently skips data (a shard
+        marked done for the old window is not done for the new one), so the
+        only safe thing is to drop them and fetch the new window from scratch.
+        Deliberately does not match sibling namespaces: deleting "posts" spares
+        "posts_tail", "posts_older" and their shards.
+        """
+        with self._lock:
+            self.conn.execute(
+                "DELETE FROM fetch_cursor WHERE subreddit=? AND (kind=? OR kind LIKE ?)",
+                (subreddit, prefix, prefix + "#%"),
+            )
+            self.conn.commit()
 
     # --- reads --------------------------------------------------------------
     def posts_needing_live_refresh(self, since_created_utc: int,
@@ -386,7 +415,7 @@ class Cache:
     def iter_rows(self, table: str, subreddit: str):
         """Yield sqlite3.Row for one subreddit's posts/comments (for CSV export).
 
-        Reads the full result set under the lock, then yields — so we never hold
+        Reads the full result set under the lock, then yields - so we never hold
         an open cursor on the shared connection while the caller does other work.
         """
         assert table in ("posts", "comments")
@@ -401,11 +430,11 @@ class Cache:
         """Yield (link_id, archive_json) rows for one subreddit, grouped by post.
 
         Ordered by ``link_id`` then ``created_utc`` so all comments for a post
-        are contiguous and chronological — the shape ``reconstruct`` needs to
+        are contiguous and chronological - the shape ``reconstruct`` needs to
         build one thread at a time without loading the whole sub into memory.
 
         Uses a dedicated short-lived read connection rather than the shared
-        one, so it can stream lazily (huge subs have 1M+ comments — a single
+        one, so it can stream lazily (huge subs have 1M+ comments - a single
         ``fetchall`` would OOM a small box) without holding a cursor on the
         connection the writer threads use.
         """
