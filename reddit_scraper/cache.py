@@ -81,6 +81,18 @@ CREATE TABLE IF NOT EXISTS subreddit_meta (
     meta_json       TEXT NOT NULL,
     fetched_at      INTEGER NOT NULL
 );
+
+-- The [since, until) range fully fetched for (subreddit, kind). See
+-- Cache.get_covered_range for why this must be an explicit range rather than
+-- something inferred from fetch_cursor's per-shard "done" flags.
+CREATE TABLE IF NOT EXISTS covered_range (
+    subreddit       TEXT NOT NULL,
+    kind            TEXT NOT NULL,        -- 'posts' | 'comments'
+    since           INTEGER NOT NULL,
+    until           INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    PRIMARY KEY (subreddit, kind)
+);
 """
 
 
@@ -244,6 +256,73 @@ class Cache:
                 (subreddit, kind, last_created_utc, 1 if done else 0, updated_at),
             )
             self.conn.commit()
+
+    def get_covered_range(self, subreddit: str, kind: str) -> tuple[int, int] | None:
+        """Return the ``(since, until)`` range fully covered for (subreddit, kind).
+
+        Deliberately tracked as an explicit range rather than inferred from
+        per-shard cursors. Two bugs motivated this:
+
+        1. Shard boundaries are a pure function of ``[since, until)``; ``until``
+           is usually "now", which is different on every run. Resuming an old
+           per-shard cursor (``{kind}#i``) against a freshly re-sharded window
+           silently drops whatever falls between a new shard's start and the
+           stale cursor's value.
+        2. Treating "every shard cursor is marked done" as "the window is
+           fully covered" (an earlier version of this migration did exactly
+           that) ignores ``since`` entirely. A subreddit first scraped with
+           the default ``since: 2y`` and later re-run with ``since: all`` would
+           still report every old shard as "done" — even though the entire
+           multi-year history before the original ``since`` was never fetched.
+           There is no reliable way to recover the original ``since`` from
+           shard cursors alone (they only record each shard's end, not its
+           start), so this class does not attempt to migrate old shard-cursor
+           data into a covered range at all: an unrecorded range is always
+           treated as *not* covered, and callers fall back to a full sharded
+           backfill (safe and idempotent — re-fetching a range that happens to
+           overlap already-stored ids is a wasted request, never a duplicate row).
+        """
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT since, until FROM covered_range WHERE subreddit=? AND kind=?",
+                (subreddit, kind),
+            ).fetchone()
+        return (int(row["since"]), int(row["until"])) if row else None
+
+    def set_covered_range(self, subreddit: str, kind: str, since: int, until: int,
+                          updated_at: int) -> None:
+        with self._lock:
+            self.conn.execute(
+                """INSERT INTO covered_range (subreddit, kind, since, until, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(subreddit, kind) DO UPDATE SET
+                       since=excluded.since, until=excluded.until,
+                       updated_at=excluded.updated_at;""",
+                (subreddit, kind, since, until, updated_at),
+            )
+            self.conn.commit()
+
+    def get_or_set_target_before(self, subreddit: str, kind: str, before: int,
+                                 updated_at: int) -> int:
+        """Freeze the ``before`` of an in-progress sharded backfill.
+
+        A large subreddit's initial backfill can span multiple runs if some
+        shards fail. Each run re-resolves ``before`` (typically "now"), which
+        would otherwise reshape the shard split between attempts — the same
+        drift hazard described in ``get_covered_range``, just triggered by a
+        failed/resumed initial sync rather than a repeat incremental one.
+        Freezing the first attempt's ``before`` and reusing it on every resume
+        (until the range is recorded as fully covered) keeps the shard
+        geometry — and therefore every shard's cursor — self-consistent.
+        """
+        existing, done = self.get_cursor(subreddit, f"{kind}_target", default=-1)
+        if not done and existing >= 0:
+            return existing
+        self.set_cursor(subreddit, f"{kind}_target", before, False, updated_at)
+        return before
+
+    def clear_target_before(self, subreddit: str, kind: str, updated_at: int) -> None:
+        self.set_cursor(subreddit, f"{kind}_target", 0, True, updated_at)
 
     # --- reads --------------------------------------------------------------
     def posts_needing_live_refresh(self, since_created_utc: int,

@@ -84,8 +84,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="rotate free proxies for live refresh")
     ap.add_argument("--refresh-limit", dest="live_limit", type=int,
                     help="cap posts refreshed (testing)")
-    ap.add_argument("--incremental", action="store_true",
-                    help="resume finished subs to catch newly-created items")
 
     # verbosity
     ap.add_argument("-v", "--verbose", action="store_true",
@@ -102,7 +100,7 @@ def _fmt(epoch: int) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     setup_logging(1 if args.verbose else (-1 if args.quiet else 0))
-    _control = ("config", "stage", "incremental", "verbose", "quiet")
+    _control = ("config", "stage", "verbose", "quiet")
     overrides = {k: v for k, v in vars(args).items()
                  if k not in _control and v is not None}
     cfg = cfgmod.load(args.config, overrides)
@@ -138,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
             from .parallel import backfill_subreddit_parallel
             for s in subs:
                 res = backfill_subreddit_parallel(cfg, cache, s, cfg.since, cfg.until,
-                                                  cfg.workers, args.incremental)
+                                                  cfg.workers)
                 log.info("[backfill x%d] r/%s: +%d posts, +%d comments, %d threads",
                          cfg.workers, s, res.get("posts", 0),
                          res.get("comments", 0), res.get("threads", 0))
@@ -147,8 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             client = ArcticClient(cfg)
             try:
                 for s in subs:
-                    res = backfill_subreddit(cfg, client, cache, s, cfg.since, cfg.until,
-                                             args.incremental)
+                    res = backfill_subreddit(cfg, client, cache, s, cfg.since, cfg.until)
                     log.info("[backfill] r/%s: %s", s,
                              ", ".join(f"+{v} {k}" for k, v in res.items()))
             finally:

@@ -48,14 +48,18 @@ def _paginate(fetch, subreddit: str, start_after: int, before: int, page_limit: 
 
 
 def _backfill_kind(cfg: Config, client: ArcticClient, cache: Cache, writer: JsonlWriter,
-                   subreddit: str, kind: str, since: int, before: int,
-                   incremental: bool) -> int:
+                   subreddit: str, kind: str, since: int, before: int) -> int:
     """Generic post/comment backfill paginating ascending by created_utc.
 
-    Resume rules:
-      * fresh/partial run: start from saved cursor (or ``since``); skip if done.
-      * incremental run: even when a previous window finished, resume from the
-        last cursor to pick up newly-created items up to ``before``.
+    This cursor tracks one absolute ``created_utc`` value (unlike the sharded
+    parallel driver, which splits the window and so must not blindly resume a
+    "done" cursor against a reshaped window — see ``parallel.py``). Here that
+    hazard doesn't exist: resuming past a "done" cursor is always safe because
+    it always means "fetch anything newer than last time", regardless of what
+    ``before`` resolved to on this run. So a finished window is only ever
+    skipped when there is provably nothing new to fetch (``before`` hasn't
+    moved past the saved cursor) — a repeat run of an active subreddit still
+    picks up whatever was posted since last time, automatically.
     """
     if kind == "posts":
         fetch = lambda a, b: client.search_posts(subreddit, a, b)
@@ -65,7 +69,7 @@ def _backfill_kind(cfg: Config, client: ArcticClient, cache: Cache, writer: Json
         upsert, write, unit = cache.upsert_comments, writer.write_comments, "cmt"
 
     start, done = cache.get_cursor(subreddit, kind, since)
-    if done and not incremental:
+    if done and before <= start:
         return 0
 
     new_total = 0
@@ -114,17 +118,17 @@ def backfill_trees(cfg: Config, client: ArcticClient, cache: Cache, writer: Json
 
 
 def backfill_subreddit(cfg: Config, client: ArcticClient, cache: Cache, subreddit: str,
-                       since: int, before: int, incremental: bool = False) -> dict:
+                       since: int, before: int) -> dict:
     writer = JsonlWriter(cfg, subreddit)
     result: dict = {}
     if cfg.subreddit_meta:
         result["meta"] = 1 if backfill_meta(client, cache, subreddit) else 0
     if cfg.fetch_posts:
         result["posts"] = _backfill_kind(cfg, client, cache, writer, subreddit,
-                                         "posts", since, before, incremental)
+                                         "posts", since, before)
     if cfg.fetch_comments:
         result["comments"] = _backfill_kind(cfg, client, cache, writer, subreddit,
-                                            "comments", since, before, incremental)
+                                            "comments", since, before)
     if cfg.api_trees:
         result["trees"] = backfill_trees(cfg, client, cache, writer, subreddit)
     return result
